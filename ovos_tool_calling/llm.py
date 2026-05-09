@@ -125,6 +125,10 @@ def build_config(plugin_config: Dict[str, Any]) -> LLMConfig:
 class LLMToolCall:
     tool_name: str
     arguments: Dict[str, Any]
+    # OpenAI-format tool_call_id. Required to feed the tool result back into
+    # the LLM's message history on subsequent agent-loop iterations. Synthetic
+    # if the model didn't supply one.
+    tool_call_id: str = ""
 
 
 @dataclass
@@ -132,26 +136,68 @@ class LLMTextAnswer:
     text: str
 
 
+def build_initial_messages(config: LLMConfig, utterance: str) -> List[Dict[str, Any]]:
+    """The starting message list for a fresh utterance: system + user."""
+    return [
+        {"role": "system", "content": config.system_prompt},
+        {"role": "user", "content": utterance},
+    ]
+
+
+def assistant_message_for_tool_calls(tool_calls: List[LLMToolCall]) -> Dict[str, Any]:
+    """Format an assistant message echoing tool_calls back into the history.
+
+    OpenAI's tool-calling protocol requires that before sending tool results,
+    we add an assistant message that lists the tool_calls being responded to.
+    """
+    return {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [
+            {
+                "id": tc.tool_call_id,
+                "type": "function",
+                "function": {
+                    "name": tc.tool_name,
+                    "arguments": json.dumps(tc.arguments),
+                },
+            }
+            for tc in tool_calls
+        ],
+    }
+
+
+def tool_result_message(tool_call_id: str, content: str) -> Dict[str, Any]:
+    """Format a tool-result message for one dispatched tool's outcome."""
+    return {
+        "role": "tool",
+        "tool_call_id": tool_call_id,
+        "content": content,
+    }
+
+
 def call_chat(
     config: LLMConfig,
-    utterance: str,
+    messages: List[Dict[str, Any]],
     tools: List[Dict],
+    tool_choice: str = "auto",
 ) -> Optional[Tuple[List[LLMToolCall], Optional[str]]]:
-    """Call the chat-completions endpoint with tools.
+    """Call the chat-completions endpoint with the given message history.
 
     Returns ``(tool_calls, text)`` where:
       - ``tool_calls`` is a list of LLMToolCall (possibly empty)
       - ``text`` is the assistant's plain content if it returned one
     Returns None on transport / HTTP failure.
+
+    Callers are responsible for assembling ``messages`` (system, user, plus
+    any assistant/tool turns from a multi-step agent loop). For a fresh
+    single-turn call use ``build_initial_messages(config, utterance)``.
     """
     payload = {
         "model": config.model,
-        "messages": [
-            {"role": "system", "content": config.system_prompt},
-            {"role": "user", "content": utterance},
-        ],
+        "messages": messages,
         "tools": tools,
-        "tool_choice": "auto",
+        "tool_choice": tool_choice,
         "max_tokens": config.max_tokens,
         "temperature": config.temperature,
     }
@@ -180,12 +226,18 @@ def call_chat(
         return None
 
     tool_calls: List[LLMToolCall] = []
-    for tc in message.get("tool_calls") or []:
+    for idx, tc in enumerate(message.get("tool_calls") or []):
         try:
             fn = tc["function"]
             args_str = fn.get("arguments") or "{}"
             args = json.loads(args_str) if isinstance(args_str, str) else dict(args_str)
-            tool_calls.append(LLMToolCall(tool_name=fn["name"], arguments=args))
+            tool_calls.append(
+                LLMToolCall(
+                    tool_name=fn["name"],
+                    arguments=args,
+                    tool_call_id=tc.get("id") or f"call_{idx}",
+                )
+            )
         except (KeyError, json.JSONDecodeError) as e:
             LOG.warning("[tool-calling] failed parsing tool_call %r: %s", tc, e)
 

@@ -225,6 +225,8 @@ class ToolCallingPipeline(ConfidenceMatcherPipeline):
         from ovos_tool_calling.gate import Gate
         from ovos_tool_calling.llm import build_config
 
+        from ovos_tool_calling.agent import AgentConfig, AgentLoop
+
         self.enabled = bool(self.config.get("enabled", False))
         self.llm_config = build_config(self.config) if self.enabled else None
         self.gate = Gate(self.config)
@@ -234,6 +236,17 @@ class ToolCallingPipeline(ConfidenceMatcherPipeline):
         # round-trip on the same utterance. Set to False to fall through to
         # downstream pipeline plugins instead.
         self.speak_text_answers = bool(self.config.get("speak_text_answers", True))
+        # v0.6: when the LLM picks one or more tools, hand off to a background
+        # agent loop that dispatches them sequentially, captures each skill's
+        # speak output, feeds it back to the LLM, and iterates. The intent
+        # service is unblocked after the first sync LLM call so stop / volume /
+        # follow-up utterances aren't queued behind the loop.
+        self.enable_agent_loop = bool(self.config.get("enable_agent_loop", True))
+        self.agent_config = AgentConfig(
+            max_tool_iterations=int(self.config.get("max_tool_iterations", 3)),
+            tool_timeout_seconds=float(self.config.get("tool_timeout_seconds", 8.0)),
+        )
+        self.agent_loop = AgentLoop(self.bus, self.agent_config)
         # When ConfidenceMatcherPipeline.match() falls through high → medium → low,
         # or when a config registers us at multiple tiers, we'd otherwise call
         # the LLM once per tier. Short-lived memo (1s) dedupes those same-tick
@@ -247,9 +260,13 @@ class ToolCallingPipeline(ConfidenceMatcherPipeline):
         model = self.llm_config.model if self.llm_config else "(none)"
         cache_size, blocklist_size = self.gate.stats()
         LOG.info(
-            "ToolCallingPipeline loaded (v0.5: speak text answers) — %s, model=%s, "
-            "speak_text=%s, gate(min_words=%d, cache_size=%d, blocklist=%d)",
+            "ToolCallingPipeline loaded (v0.6: agent loop) — %s, model=%s, "
+            "speak_text=%s, agent_loop=%s (max_iter=%d, tool_timeout=%.1fs), "
+            "gate(min_words=%d, cache_size=%d, blocklist=%d)",
             status, model, self.speak_text_answers,
+            self.enable_agent_loop,
+            self.agent_config.max_tool_iterations,
+            self.agent_config.tool_timeout_seconds,
             self.gate.min_words, self.gate.cache_size, blocklist_size,
         )
 
@@ -349,15 +366,16 @@ class ToolCallingPipeline(ConfidenceMatcherPipeline):
             self._inflight_result = decision.cached_match
             return decision.cached_match
 
-        from ovos_tool_calling.dispatch import make_match
-        from ovos_tool_calling.llm import call_chat
+        from ovos_tool_calling.dispatch import make_match, make_speak_match
+        from ovos_tool_calling.llm import build_initial_messages, call_chat
 
         tools, name_index = self.build_catalog()
         if not tools:
             LOG.debug("[tool-calling] %s: no tools registered yet", tier)
             return None
 
-        result = call_chat(self.llm_config, utterance, tools)
+        initial_messages = build_initial_messages(self.llm_config, utterance)
+        result = call_chat(self.llm_config, initial_messages, tools)
         if result is None:
             return None
         tool_calls, text = result
@@ -383,7 +401,32 @@ class ToolCallingPipeline(ConfidenceMatcherPipeline):
                 LOG.debug("[tool-calling] %s: LLM declined (no tool, no text)", tier)
             return None
 
-        # Pick the first tool call; v0.5 will support multi-step.
+        # Multi-tool path (v0.6): hand off to the background agent loop, return
+        # the v0.5 sentinel match immediately so the intent service is unblocked.
+        # Stop / volume / follow-up utterances continue to flow through the
+        # pipeline normally; the loop subscribes to mycroft.stop and aborts.
+        if self.enable_agent_loop:
+            LOG.info(
+                "[tool-calling] %s: agent loop -> %d tool_call(s) initially",
+                tier, len(tool_calls),
+            )
+            self.agent_loop.start(
+                initial_messages=initial_messages,
+                initial_tool_calls=tool_calls,
+                initial_text=text,
+                utterance=utterance,
+                lang=lang,
+                original_message=message,
+                llm_config=self.llm_config,
+                tools=tools,
+                name_index=name_index,
+            )
+            sentinel = make_speak_match(utterance=utterance, text=text or "", lang=lang)
+            self._inflight_result = sentinel
+            self._inflight_at = _time.monotonic()
+            return sentinel
+
+        # Single-tool path (v0.5 fallback when enable_agent_loop=False).
         call = tool_calls[0]
         entry = name_index.get(call.tool_name)
         if entry is None:

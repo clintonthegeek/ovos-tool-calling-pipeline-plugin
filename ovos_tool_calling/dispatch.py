@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
+from ovos_bus_client.message import Message
 from ovos_plugin_manager.templates.pipeline import IntentHandlerMatch
 
 from ovos_tool_calling.schemas import ToolEntry
@@ -29,6 +30,28 @@ from ovos_tool_calling.schemas import ToolEntry
 
 SPEAK_MATCH_TYPE = "tool-calling:speak"
 SPEAK_SKILL_ID = "tool-calling.openvoiceos"
+
+
+def _match_data_for(entry: ToolEntry, args: Dict[str, Any], utterance: str,
+                    confidence: float = 0.99) -> Dict[str, Any]:
+    """Build the message.data dict for a dispatch, in the shape Adapt or
+    Padatious would have produced. Shared by ``make_match`` (returns an
+    IntentHandlerMatch for ovos-core to dispatch) and ``build_dispatch_message``
+    (returns a Message the agent emits itself)."""
+    full_name = f"{entry.skill_id}:{entry.intent_name}"
+    if entry.matcher == "padatious":
+        data: Dict[str, Any] = dict(args or {})
+        data.setdefault("utterance", utterance)
+        data.setdefault("conf", confidence)
+        data.setdefault("name", full_name)
+        return data
+    return {
+        "intent_type": full_name,
+        "utterance": utterance,
+        "confidence": confidence,
+        "target": None,
+        "__tags__": [],
+    }
 
 
 def make_match(
@@ -47,37 +70,41 @@ def make_match(
             score, but ovos-core expects something in match_data for Adapt.
     """
     full_name = f"{entry.skill_id}:{entry.intent_name}"
-
-    if entry.matcher == "padatious":
-        # Padatious skills receive the slot dict directly in message.data.
-        # Padatious also includes the original utterance and confidence; mirror that.
-        match_data: Dict[str, Any] = dict(args or {})
-        match_data.setdefault("utterance", utterance)
-        match_data.setdefault("conf", confidence)
-        match_data.setdefault("name", full_name)
-        return IntentHandlerMatch(
-            match_type=full_name,
-            match_data=match_data,
-            skill_id=entry.skill_id,
-            utterance=utterance,
-        )
-
-    # Adapt path. Most Adapt handlers only read ``utterance`` and re-parse.
-    # Fill in the canonical Adapt fields so handlers that *do* introspect
-    # message.data don't choke on missing keys.
-    match_data = {
-        "intent_type": full_name,
-        "utterance": utterance,
-        "confidence": confidence,
-        "target": None,
-        "__tags__": [],
-    }
     return IntentHandlerMatch(
         match_type=full_name,
-        match_data=match_data,
+        match_data=_match_data_for(entry, args, utterance, confidence),
         skill_id=entry.skill_id,
         utterance=utterance,
     )
+
+
+def build_dispatch_message(
+    entry: ToolEntry,
+    args: Dict[str, Any],
+    utterance: str,
+    lang: str = "en-us",
+    original_message: Optional[Message] = None,
+    confidence: float = 0.99,
+) -> Message:
+    """Build the bus Message the agent emits to dispatch a tool itself.
+
+    Used by the agent loop (v0.6+) to dispatch follow-up tools directly,
+    bypassing ``IntentHandlerMatch`` round-trips through the intent service
+    (we already returned a sentinel match for the original utterance).
+
+    The Message type is ``<skill_id>:<intent_name>``; data shape mirrors
+    what Adapt or Padatious would have produced. When ``original_message``
+    is provided we use ``message.forward`` so session/context propagates.
+    """
+    full_name = f"{entry.skill_id}:{entry.intent_name}"
+    data = _match_data_for(entry, args, utterance, confidence)
+    data.setdefault("lang", lang)
+    if original_message is not None:
+        msg = original_message.forward(full_name, data)
+    else:
+        msg = Message(full_name, data, {"lang": lang})
+    msg.context["skill_id"] = entry.skill_id
+    return msg
 
 
 def make_speak_match(

@@ -23,8 +23,8 @@ This is opposed to the existing `ovos-persona-pipeline-plugin`, which uses an LL
 | 0.3 | ✅ shipped | Tool dispatch via LLM with synthesized IntentHandlerMatch |
 | 0.4 | ✅ shipped | Latency gate + dispatch cache |
 | 0.5 | ✅ shipped | Speak plain text answers when no tool fits |
-| 0.6 | 🟡 next | Multi-tool agent loop (sequential calls) |
-| 0.7 | 🟡 planned | Predictive gate (peek at Adapt/Padatious before LLM call) |
+| 0.6 | ✅ shipped | Multi-tool agent loop (background thread, stop coord) |
+| 0.7 | 🟡 next | Predictive gate (peek at Adapt/Padatious before LLM call) |
 | 0.8 | 🟡 planned | Conversational state respect (defer to converse pipeline) |
 | 1.0 | 🟡 planned | Stable API; PyPI release |
 
@@ -134,19 +134,51 @@ Single-flight memo with 1s TTL absorbs `ConfidenceMatcherPipeline.match()`'s tie
 
 ---
 
-## v0.6 — Multi-tool agent loop (next)
+## v0.6 — Multi-tool agent loop (shipped)
 
-**What**: when the LLM returns multiple `tool_calls`, dispatch them sequentially. After each tool's response, feed back to the LLM via a follow-up message round.
+**What**: when the LLM returns one or more `tool_calls`, dispatch them sequentially in a background thread, capture each skill's speak output, feed the output back to the LLM, and iterate until the LLM stops calling tools or `max_tool_iterations` (default 3) is reached. Final assistant text (if any) is spoken via the v0.5 path.
 
-**Why**: "set a five minute timer and tell me a joke" → two tool calls. Today we take only the first.
+**Why**: "set a five minute timer and tell me a joke" → two tool calls. Today (v0.5) we take only the first. v0.6 dispatches both, and additionally enables flows like "what's the weather, and if it's cold set a heater alarm" where the second decision depends on the first tool's result.
 
-**Design notes**:
-- Iterate up to a configurable `max_tool_iterations` (default 3).
-- After dispatching tool N, capture the speak/response from the bus, append as an assistant message, and ask the LLM if more tools are needed.
-- Risk: skill responses arrive asynchronously via bus events; we'd need to listen for the speak event after dispatch.
-- Probably involves restructuring the dispatch flow to be agent-like (loop until LLM declines further tools).
+**Design**:
 
-**Estimated**: bigger than the others; the agent loop is non-trivial. ~200 lines.
+- **Background-thread the loop.** The intent service's `handle_utterance` iterates pipelines synchronously on a single thread. Blocking it for ~24s (3 iterations × 8s tool timeout) would queue every other utterance — including stop, snooze, volume — behind us. Instead: do the *first* LLM call synchronously in `_try_llm_dispatch` (~1-2s, same as v0.5), and if it returns tool_calls, hand off to `agent.AgentLoop.start(...)` which runs the loop in its own thread. We return the v0.5 sentinel `IntentHandlerMatch` immediately, freeing the intent service.
+- **Stop coordination.** The agent thread subscribes to `mycroft.stop` and `recognizer_loop:utterance` for the duration of its run. Either firing aborts the loop before the next iteration. Skills currently dispatched aren't killed by us — the stop pipeline already handles that. We just stop dispatching new ones.
+- **At-most-one loop.** A module-level lock guards the slot. If a fresh loop starts (via a new utterance) while a previous one is still iterating, the previous one is signaled to abort and the new one takes over.
+- **Response capture.** For each dispatched tool, listen for `speak` events scoped by the dispatched skill's `skill_id`, plus `mycroft.skill.handler.complete` and `.error`. Wait up to `tool_timeout_seconds` (default 8s). Captured speaks are concatenated and fed back to the LLM as `{role: "tool", tool_call_id: ..., content: "ok\n<speak text>"}` (or `"error: <msg>"` on failure / timeout).
+- **Dispatch via bus emit.** Since we don't return another `IntentHandlerMatch` for the second/third tool (we already returned the sentinel), the agent thread emits the `<skill_id>:<intent_name>` event itself with the same `match_data` shape `dispatch.make_match` produces. New helper: `dispatch.build_dispatch_message(...)`.
+- **Final speak.** When the LLM eventually returns text instead of more tool_calls (or we hit max iterations), the agent speaks that text via `bus.emit(Message("speak", {...}))` — same as v0.5's text path.
+
+**Configuration** (with defaults):
+
+```jsonc
+{
+  "ovos-tool-calling-pipeline-plugin": {
+    "enable_agent_loop": true,
+    "max_tool_iterations": 3,
+    "tool_timeout_seconds": 8.0
+  }
+}
+```
+
+`enable_agent_loop: false` reverts to v0.5 behavior (first tool only).
+
+**Module additions**:
+
+- `agent.py` (new) — `AgentLoop` class: `start()`, `_run()` (worker), `_dispatch_one()`, `_should_abort()`, `cancel()`. Background thread.
+- `llm.py` — `call_chat` refactored to accept a full message list (system + user + tool + assistant turns) instead of just a single utterance. `LLMToolCall` gains `tool_call_id`.
+- `dispatch.py` — `build_dispatch_message(entry, args, utterance, lang, original_message)` returns a `Message` for the agent to emit.
+
+**Limits**:
+
+- Per-tool 8s wait may truncate slow skills (Wikipedia search). User-tunable via config.
+- `mycroft.skill.handler.complete` is reliable for `@intent_handler`-decorated handlers but custom event handlers don't emit it; those tools will hit the timeout and be reported as "timed out" to the LLM.
+- The cache (`gate.py`) is bypassed during agent loops — caching multi-tool sequences is volatile and not worth the complexity.
+
+**Verified end-to-end**:
+- Single-tool dispatch ("set a thirteen minute timer") — CreateTimer dispatched, handler.complete observed, LLM follow-up summary suppressed because skill spoke. Loop exited cleanly.
+- Multi-tool sequential ("set a 14 minute timer and tell me a joke") — both skills dispatched (timer + joke), both spoke, redundant LLM summary suppressed.
+- Stop interruption — emitted `mycroft.stop` mid-loop during a triple-wiki query. Loop logged `mycroft.stop received -> abort loop` and `aborted before iteration 2`; remaining wiki queries (Venus, Earth) were not dispatched.
 
 ---
 

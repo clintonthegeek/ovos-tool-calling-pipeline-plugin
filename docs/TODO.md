@@ -15,7 +15,7 @@ For the long-term arc, see `ROADMAP.md`.
 
 ## Now
 
-_(no active items — pick from "Soon" below)_
+_(no active items — pick from "Soon" below or v0.7 in ROADMAP)_
 
 ## Soon (after v0.5)
 
@@ -33,6 +33,7 @@ _(no active items — pick from "Soon" below)_
 
 ## Recently done (keep last ~10)
 
+- [x] **v0.6 multi-tool agent loop** committed `__HASH__`. Background-thread loop dispatches sequential tool_calls via bus emit, captures speak text via `mycroft.skill.handler.complete` + `speak` listeners, feeds results back to LLM, iterates up to 3. Aborts on `mycroft.stop` or new utterance. Suppresses redundant LLM summary if any skill already spoke. Config: `enable_agent_loop: true`, `max_tool_iterations: 3`, `tool_timeout_seconds: 8.0`.
 - [x] **v0.5 speak text answers** committed `f1642cc`. LLM-text path emits `speak` and returns a `tool-calling:speak` sentinel match so `ovos-persona-low` doesn't run a second LLM call. Config flag `speak_text_answers: true`.
 - [x] **v0.4 latency gate** committed `b73e202`. Min-words filter, blocklist, LRU, in-flight memo TTL.
 - [x] **v0.3 tool dispatch** committed `afd62cf`. End-to-end working: voice → STT → pipeline → LLM → dispatch → skill → TTS.
