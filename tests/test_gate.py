@@ -95,6 +95,86 @@ def test_cache_normalization_handles_whitespace_and_case():
     assert d.cached_match is m
 
 
+# --- numeric-word normalization (digit <-> word equivalence in cache keys) ----
+
+
+def test_cache_normalization_digit_word_equivalence_simple():
+    """'five' and '5' should hit the same cache entry."""
+    g = Gate({"min_words": 2, "cache_size": 8})
+    m = _fake_match("ovos-skill-alerts:CreateTimer")
+    g.record("set a 5 minute timer", m)
+
+    d = g.consider("set a five minute timer")
+    assert d.action == "cached"
+    assert d.cached_match is m
+
+
+def test_cache_normalization_digit_word_equivalence_reverse():
+    """'5' should hit a cache entry recorded under 'five'."""
+    g = Gate({"min_words": 2, "cache_size": 8})
+    m = _fake_match()
+    g.record("set a five minute timer", m)
+
+    d = g.consider("set a 5 minute timer")
+    assert d.action == "cached"
+    assert d.cached_match is m
+
+
+def test_cache_normalization_teen_words():
+    """Teens (thirteen..nineteen) should normalize to their digits."""
+    g = Gate({"min_words": 2, "cache_size": 8})
+    m = _fake_match()
+    g.record("set a 15 minute timer", m)
+
+    assert g.consider("set a fifteen minute timer").action == "cached"
+
+
+def test_cache_normalization_tens_words():
+    """Round tens (twenty..ninety) should normalize to digits."""
+    g = Gate({"min_words": 2, "cache_size": 8})
+    m = _fake_match()
+    g.record("set a 30 minute timer", m)
+
+    assert g.consider("set a thirty minute timer").action == "cached"
+
+
+def test_cache_normalization_compound_tens():
+    """'twenty five' and '25' should hit the same cache key."""
+    g = Gate({"min_words": 2, "cache_size": 8})
+    m = _fake_match()
+    g.record("set a 25 minute timer", m)
+
+    assert g.consider("set a twenty five minute timer").action == "cached"
+
+
+def test_cache_normalization_hyphenated_compound():
+    """'twenty-five' (hyphenated, as STT may transcribe) should also normalize."""
+    g = Gate({"min_words": 2, "cache_size": 8})
+    m = _fake_match()
+    g.record("set a 25 minute timer", m)
+
+    assert g.consider("set a twenty-five minute timer").action == "cached"
+
+
+def test_cache_normalization_does_not_mangle_non_numbers():
+    """Words that look numeric-adjacent must not be coerced (e.g. 'won' != 'one')."""
+    g = Gate({"min_words": 2, "cache_size": 8})
+    m = _fake_match()
+    g.record("we won the game", m)
+
+    # Different sentence with the digit '1' substituted should NOT hit cache.
+    assert g.consider("we 1 the game").action == "proceed"
+
+
+def test_cache_normalization_idempotent_on_digits():
+    """Already-digit utterances should still cache-hit themselves."""
+    g = Gate({"min_words": 2, "cache_size": 8})
+    m = _fake_match()
+    g.record("set a 5 minute timer", m)
+
+    assert g.consider("set a 5 minute timer").action == "cached"
+
+
 def test_record_none_does_not_cache():
     """A None result is worth re-trying next time, not caching."""
     g = Gate({"min_words": 2, "cache_size": 8})

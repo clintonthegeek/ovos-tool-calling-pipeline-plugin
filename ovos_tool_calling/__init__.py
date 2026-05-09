@@ -1,3 +1,4 @@
+import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from threading import RLock
@@ -341,9 +342,7 @@ class ToolCallingPipeline(ConfidenceMatcherPipeline):
         utterance = utterances[0]
 
         # Reuse the previous tier's result if we just computed it (within ttl).
-        import time as _time
-
-        now = _time.monotonic()
+        now = time.monotonic()
         if (
             self._inflight_utterance == utterance
             and (now - self._inflight_at) < self._inflight_ttl
@@ -390,7 +389,7 @@ class ToolCallingPipeline(ConfidenceMatcherPipeline):
                     tier=tier,
                 )
                 self._inflight_result = speak_match
-                self._inflight_at = _time.monotonic()
+                self._inflight_at = time.monotonic()
                 return speak_match
             if text:
                 LOG.info(
@@ -423,7 +422,7 @@ class ToolCallingPipeline(ConfidenceMatcherPipeline):
             )
             sentinel = make_speak_match(utterance=utterance, text=text or "", lang=lang)
             self._inflight_result = sentinel
-            self._inflight_at = _time.monotonic()
+            self._inflight_at = time.monotonic()
             return sentinel
 
         # Single-tool path (v0.5 fallback when enable_agent_loop=False).
@@ -442,7 +441,7 @@ class ToolCallingPipeline(ConfidenceMatcherPipeline):
         )
         match = make_match(entry, call.arguments, utterance)
         self._inflight_result = match
-        self._inflight_at = _time.monotonic()
+        self._inflight_at = time.monotonic()
         self.gate.record(utterance, match)
         return match
 

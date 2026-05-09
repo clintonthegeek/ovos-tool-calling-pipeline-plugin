@@ -30,6 +30,47 @@ from ovos_plugin_manager.templates.pipeline import IntentHandlerMatch
 from ovos_utils.log import LOG
 
 
+_NUM_WORDS: Dict[str, int] = {
+    "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4,
+    "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9,
+    "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13,
+    "fourteen": 14, "fifteen": 15, "sixteen": 16, "seventeen": 17,
+    "eighteen": 18, "nineteen": 19,
+}
+_TENS_WORDS: Dict[str, int] = {
+    "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50,
+    "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90,
+}
+
+
+def _words_to_digits(text: str) -> str:
+    """Replace English number-words 0..99 with their digit form.
+
+    Handles bare units ("five" → "5"), teens, round tens, and compound
+    tens-plus-units ("twenty five" → "25"). Other tokens pass through
+    untouched. The output preserves single-space separation between tokens.
+    """
+    tokens = text.split()
+    out: List[str] = []
+    i = 0
+    while i < len(tokens):
+        t = tokens[i]
+        if t in _TENS_WORDS:
+            base = _TENS_WORDS[t]
+            nxt = tokens[i + 1] if i + 1 < len(tokens) else None
+            if nxt in _NUM_WORDS and 1 <= _NUM_WORDS[nxt] <= 9:
+                out.append(str(base + _NUM_WORDS[nxt]))
+                i += 2
+                continue
+            out.append(str(base))
+        elif t in _NUM_WORDS:
+            out.append(str(_NUM_WORDS[t]))
+        else:
+            out.append(t)
+        i += 1
+    return " ".join(out)
+
+
 @dataclass(frozen=True)
 class GateDecision:
     """Result of consulting the gate before doing LLM work.
@@ -70,8 +111,16 @@ class Gate:
 
     @staticmethod
     def _normalize(utterance: str) -> str:
-        """Cache-key normalization: trim, collapse whitespace, lowercase."""
-        return re.sub(r"\s+", " ", utterance.strip().lower())
+        """Cache-key normalization: trim, collapse whitespace, lowercase, and
+        coerce English number-words 0..99 into digits so e.g. "set a five
+        minute timer" and "set a 5 minute timer" share a cache entry.
+        """
+        text = re.sub(r"\s+", " ", utterance.strip().lower())
+        # Treat hyphenated compounds ("twenty-five") as two tokens so they
+        # match the spaced form. Done after lowercasing so we don't disturb
+        # other punctuation logic.
+        text = text.replace("-", " ")
+        return _words_to_digits(text)
 
     def consider(self, utterance: str) -> GateDecision:
         """Run the gate for an utterance. Does not call the LLM itself."""

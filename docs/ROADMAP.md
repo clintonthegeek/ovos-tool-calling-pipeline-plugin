@@ -24,7 +24,7 @@ This is opposed to the existing `ovos-persona-pipeline-plugin`, which uses an LL
 | 0.4 | ✅ shipped | Latency gate + dispatch cache |
 | 0.5 | ✅ shipped | Speak plain text answers when no tool fits |
 | 0.6 | ✅ shipped | Multi-tool agent loop (background thread, stop coord) |
-| 0.7 | 🟡 next | Predictive gate (peek at Adapt/Padatious before LLM call) |
+| 0.7 | ⏸ deferred | Predictive gate — original `-high` motivation gone (we stay at `-low`) |
 | 0.8 | 🟡 planned | Conversational state respect (defer to converse pipeline) |
 | 1.0 | 🟡 planned | Stable API; PyPI release |
 
@@ -182,19 +182,20 @@ Single-flight memo with 1s TTL absorbs `ConfidenceMatcherPipeline.match()`'s tie
 
 ---
 
-## v0.7 — Predictive gate (planned)
+## v0.7 — Predictive gate (motivation revisited)
 
-**What**: peek at what Padatious and Adapt would say *before* calling the LLM. If either has a high-confidence match, abstain (return None) and let the rule-based matchers handle it.
+**Status**: motivation weakened. The original rationale was "this is what unlocks safely placing the plugin at `-high` priority" — but the user has decided to keep us at `-low` permanently as a fallback pipeline. At `-low`, rule-based matchers (Adapt, Padatious, m2v, OCP) have already had first crack at the utterance. A predictive gate would be re-asking "could a rule-based matcher handle this?" when the answer is already "no, they tried and didn't claim it." Mostly redundant.
 
-**Why**: this is what unlocks safely placing the plugin at `-high` priority — pure-orchestrator mode where the LLM gets first crack but doesn't waste round-trips on trivial commands.
+**Possible repurposes** (if we keep this milestone at all):
+- Skip the LLM call for utterances that look like obvious keyword commands the rule-based matchers happened to miss due to vocab gaps (cost-saving, not correctness).
+- Heuristics-only: short utterances + presence of an Adapt-required vocab → abstain.
 
-**Design notes**:
+**Decision**: defer. Re-open if we observe a meaningful slice of `-low` traffic where the LLM is dispatching utterances a rule-based matcher should have handled (not just things rule-based matchers can't reach).
+
+**Design notes** (for reference if reopened):
 - Querying the matchers via bus (`intent.service.padatious.get`) is async and adds bus round-trips.
-- Could instead embed a copy of the Padatious classifier locally — train on the same registered intents — and run inference in-process. This is more code but faster.
+- Could instead embed a copy of the Padatious classifier locally — train on the same registered intents — and run inference in-process. More code but faster.
 - Or: use a simpler heuristic — shorter utterances are more likely to be keyword commands; pass them to Adapt-style heuristic checks.
-- May be unnecessary if users are content with pipeline placement (us at `-low`).
-
-**Estimated**: depends on approach; ~100 lines for bus-query, ~500 for embedded classifier.
 
 ---
 

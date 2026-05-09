@@ -4,22 +4,24 @@ This file is loaded automatically by Claude Code when working in this repo. Read
 
 ## Read first
 
-Before any non-trivial work, consult these in order:
+Before any non-trivial work, consult these in order. **Plugin-local docs first, then general OVOS docs at the project root** (`../docs/`):
 
 1. **`docs/ROADMAP.md`** — the long-term plan and current milestone. Don't propose work that contradicts it without flagging.
 2. **`docs/TODO.md`** — active short-term tasks. Pick from "Now" if no specific user request.
-3. **`docs/ARCHITECTURE.md`** — OVOS topology. Necessary background for any change to dispatch logic.
+3. **`../docs/ARCHITECTURE.md`** — OVOS topology. Necessary background for any change to dispatch logic.
 4. **`docs/PIPELINE_PROTOCOL.md`** — the contract this plugin implements. Necessary for any change to `__init__.py`.
-5. **`docs/INTENT_MATCHERS.md`** — Adapt and Padatious deep dives. Necessary for any change to schema generation or dispatch shapes.
-6. **`docs/INSTALL_NOTES.md`** — known gotchas. Check this *first* when something seems broken — most surprises here are documented.
-7. **`docs/DEV_LOOP.md`** — how to test and verify. Use the canonical commands; don't reinvent.
+5. **`../docs/INTENT_MATCHERS.md`** — Adapt and Padatious deep dives. Necessary for any change to schema generation or dispatch shapes.
+6. **`../docs/INSTALL_NOTES.md`** — general OVOS gotchas. Check this *first* when something seems broken — most surprises here are documented.
+7. **`docs/INSTALL_NOTES.md`** — plugin-specific gotchas (LLM model choice for tool calling, vocab id case quirk).
+8. **`docs/DEV_LOOP.md`** — how to test and verify. Use the canonical commands; don't reinvent.
 
 ## Update these as you work
 
 - **`docs/TODO.md`**: when you start a task, mark it `[~]` (in progress). When done, move to "Recently done" with the commit hash.
 - **`docs/ROADMAP.md`**: only update when a milestone changes status (✅ shipped) or when a planned milestone needs revision.
-- **`docs/INSTALL_NOTES.md`**: append a new section every time you diagnose a non-obvious OVOS quirk. Keep future sessions from re-discovering.
-- **`docs/INTENT_MATCHERS.md` / `PIPELINE_PROTOCOL.md` / `ARCHITECTURE.md`**: these are reference docs; update when you discover something they got wrong, but don't bloat them with day-to-day work.
+- **`../docs/INSTALL_NOTES.md`** (general OVOS): append a new section every time you diagnose a non-obvious *general* OVOS quirk. Keep future sessions from re-discovering.
+- **`docs/INSTALL_NOTES.md`** (plugin-specific): append plugin-specific gotchas here — things tied to tool-calling, our LLM client, our SkillRegistry, etc.
+- **`../docs/INTENT_MATCHERS.md` / `../docs/ARCHITECTURE.md` / `docs/PIPELINE_PROTOCOL.md`**: these are reference docs; update when you discover something they got wrong, but don't bloat them with day-to-day work.
 
 ## Conventions
 
