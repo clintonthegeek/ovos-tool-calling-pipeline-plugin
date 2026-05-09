@@ -112,8 +112,12 @@ class SkillRegistry:
         phrase = data.get("entity_value")
         if not vocab_id or not phrase:
             return
+        # OVOS munges vocab IDs differently in two places: vocab files emit
+        # `<alnum_skill_id><Title>` while IntentBuilder.require() keeps the
+        # author's case. Adapt's matcher lowercases at runtime, so we do too
+        # at registration time so vocab.lookup() works either way.
         with self._lock:
-            self._vocab[vocab_id].add(phrase)
+            self._vocab[vocab_id.lower()].add(phrase)
 
     def _on_padatious_intent(self, message: Message):
         data = message.data or {}
@@ -161,9 +165,10 @@ class SkillRegistry:
 
     def vocab(self, vocab_id: str) -> List[str]:
         """Resolve a vocab id (e.g. 'create') to its literal phrases
-        (e.g. ['set', 'start', 'make']). Returns [] if unknown."""
+        (e.g. ['set', 'start', 'make']). Returns [] if unknown.
+        Lookup is case-insensitive (see _on_vocab for why)."""
         with self._lock:
-            return sorted(self._vocab.get(vocab_id, ()))
+            return sorted(self._vocab.get(vocab_id.lower(), ()))
 
     def summary(self) -> str:
         """Human-readable summary, useful for logging."""
@@ -184,15 +189,19 @@ class SkillRegistry:
 class ToolCallingPipeline(ConfidenceMatcherPipeline):
     """LLM-orchestrator pipeline plugin.
 
-    v0.1: builds a live registry of every skill intent registered on the bus.
-    Still returns no match from match_*; subsequent versions will turn the
-    registry into LLM tool schemas and dispatch tool calls.
+    v0.2: builds OpenAI-style tool schemas from the registry. Still returns
+    no match from match_*; v0.3 will call the LLM with the catalog and
+    dispatch the picked tool.
 
     Bus inspection helpers (intended for development):
-      - emit `tool-calling.registry.dump` to log the current registry summary
+      - emit ``tool-calling.registry.dump`` to log the registry summary
+      - emit ``tool-calling.schemas.dump`` to log a catalog summary
+      - emit ``tool-calling.schemas.dump`` with ``data={"full": True}`` to
+        log the full JSON catalog (large)
     """
 
-    DUMP_EVENT = "tool-calling.registry.dump"
+    DUMP_REGISTRY_EVENT = "tool-calling.registry.dump"
+    DUMP_SCHEMAS_EVENT = "tool-calling.schemas.dump"
 
     def __init__(
         self,
@@ -201,15 +210,65 @@ class ToolCallingPipeline(ConfidenceMatcherPipeline):
     ):
         super().__init__(bus=bus, config=config)
         self.registry = SkillRegistry(self.bus)
-        self.bus.on(self.DUMP_EVENT, self._handle_dump)
+        self.bus.on(self.DUMP_REGISTRY_EVENT, self._handle_dump_registry)
+        self.bus.on(self.DUMP_SCHEMAS_EVENT, self._handle_dump_schemas)
         LOG.info(
-            "ToolCallingPipeline loaded (v0.1: skill discovery) — "
-            "dump with: bus.emit(Message('%s'))",
-            self.DUMP_EVENT,
+            "ToolCallingPipeline loaded (v0.2: schema generation) — "
+            "registry dump: bus.emit(Message('%s')); "
+            "schema dump: bus.emit(Message('%s'))",
+            self.DUMP_REGISTRY_EVENT,
+            self.DUMP_SCHEMAS_EVENT,
         )
 
-    def _handle_dump(self, message: Message):
+    def build_catalog(self):
+        """Snapshot the registry and return ``(tools, name_index)``.
+
+        Imported lazily so the schemas module can keep importing names from
+        this module without risking a circular import at startup.
+        """
+        from ovos_tool_calling.schemas import build_tool_catalog
+
+        return build_tool_catalog(self.registry.snapshot(), self.registry.vocab)
+
+    def _handle_dump_registry(self, message: Message):
         LOG.info("[tool-calling] %s", self.registry.summary())
+
+    def _handle_dump_schemas(self, message: Message):
+        import json
+
+        tools, index = self.build_catalog()
+        # Catalog summary (always small).
+        adapt = sum(1 for e in index.values() if e.matcher == "adapt")
+        pada = sum(1 for e in index.values() if e.matcher == "padatious")
+        LOG.info(
+            "[tool-calling] catalog: %d tools (%d adapt + %d padatious)",
+            len(tools),
+            adapt,
+            pada,
+        )
+        if (message.data or {}).get("full"):
+            # Full catalog requested; log as JSON. Can be very long.
+            LOG.info(
+                "[tool-calling] catalog JSON:\n%s",
+                json.dumps(tools, indent=2, ensure_ascii=False),
+            )
+            return
+        # Otherwise, log a few representative entries: first adapt + first padatious.
+        first_adapt = next(
+            (e for e in index.values() if e.matcher == "adapt"), None
+        )
+        first_pada = next(
+            (e for e in index.values() if e.matcher == "padatious"), None
+        )
+        for label, entry in (("adapt example", first_adapt), ("padatious example", first_pada)):
+            if entry is None:
+                continue
+            LOG.info(
+                "[tool-calling] %s: %s\n%s",
+                label,
+                entry.name,
+                json.dumps(entry.schema, indent=2, ensure_ascii=False),
+            )
 
     def match_high(
         self, utterances: List[str], lang: str, message: Message
