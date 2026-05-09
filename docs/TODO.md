@@ -33,7 +33,7 @@ _(no active items — pick from "Soon" below)_
 
 ## Recently done (keep last ~10)
 
-- [x] **v0.5 speak text answers** committed `ea282fd`. LLM-text path emits `speak` and returns a `tool-calling:speak` sentinel match so `ovos-persona-low` doesn't run a second LLM call. Config flag `speak_text_answers: true`.
+- [x] **v0.5 speak text answers** committed `f1642cc`. LLM-text path emits `speak` and returns a `tool-calling:speak` sentinel match so `ovos-persona-low` doesn't run a second LLM call. Config flag `speak_text_answers: true`.
 - [x] **v0.4 latency gate** committed `b73e202`. Min-words filter, blocklist, LRU, in-flight memo TTL.
 - [x] **v0.3 tool dispatch** committed `afd62cf`. End-to-end working: voice → STT → pipeline → LLM → dispatch → skill → TTS.
 - [x] **v0.2 tool schema generation** committed `cde5b37`. 81 tools generated for the user's install (36 adapt + 45 padatious).
