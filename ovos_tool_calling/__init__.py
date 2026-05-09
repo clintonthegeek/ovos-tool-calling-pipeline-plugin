@@ -222,22 +222,29 @@ class ToolCallingPipeline(ConfidenceMatcherPipeline):
         self.bus.on(self.DUMP_REGISTRY_EVENT, self._handle_dump_registry)
         self.bus.on(self.DUMP_SCHEMAS_EVENT, self._handle_dump_schemas)
 
+        from ovos_tool_calling.gate import Gate
         from ovos_tool_calling.llm import build_config
 
         self.enabled = bool(self.config.get("enabled", False))
         self.llm_config = build_config(self.config) if self.enabled else None
-        # ConfidenceMatcherPipeline.match() falls through high → medium → low,
-        # and some pipeline configurations register us at multiple tiers. Memo
-        # by utterance so we only pay one LLM round-trip per request.
+        self.gate = Gate(self.config)
+        # When ConfidenceMatcherPipeline.match() falls through high → medium → low,
+        # or when a config registers us at multiple tiers, we'd otherwise call
+        # the LLM once per tier. Short-lived memo (1s) dedupes those same-tick
+        # calls without persisting across separate user queries.
         self._inflight_utterance: Optional[str] = None
         self._inflight_result: Optional[IntentHandlerMatch] = None
+        self._inflight_at: float = 0.0
+        self._inflight_ttl: float = 1.0
 
         status = "ENABLED" if self.enabled and (self.llm_config and self.llm_config.is_usable()) else "disabled"
         model = self.llm_config.model if self.llm_config else "(none)"
+        cache_size, blocklist_size = self.gate.stats()
         LOG.info(
-            "ToolCallingPipeline loaded (v0.3: tool dispatch) — %s, model=%s",
-            status,
-            model,
+            "ToolCallingPipeline loaded (v0.4: latency gate) — %s, model=%s, "
+            "gate(min_words=%d, cache_size=%d, blocklist=%d)",
+            status, model,
+            self.gate.min_words, self.gate.cache_size, blocklist_size,
         )
 
     def build_catalog(self):
@@ -306,11 +313,31 @@ class ToolCallingPipeline(ConfidenceMatcherPipeline):
             return None
         utterance = utterances[0]
 
-        # Reuse the previous tier's result if we just computed it.
-        if self._inflight_utterance == utterance:
+        # Reuse the previous tier's result if we just computed it (within ttl).
+        import time as _time
+
+        now = _time.monotonic()
+        if (
+            self._inflight_utterance == utterance
+            and (now - self._inflight_at) < self._inflight_ttl
+        ):
             return self._inflight_result
         self._inflight_utterance = utterance
         self._inflight_result = None
+        self._inflight_at = now
+
+        # Gate: cheap pre-LLM admission control + LRU cache.
+        decision = self.gate.consider(utterance)
+        if decision.action == "skip":
+            LOG.info("[tool-calling] %s: gate skip (%s)", tier, decision.reason)
+            return None
+        if decision.action == "cached":
+            LOG.info(
+                "[tool-calling] %s: gate cache hit -> %s",
+                tier, decision.cached_match.match_type,
+            )
+            self._inflight_result = decision.cached_match
+            return decision.cached_match
 
         from ovos_tool_calling.dispatch import make_match
         from ovos_tool_calling.llm import call_chat
@@ -351,6 +378,8 @@ class ToolCallingPipeline(ConfidenceMatcherPipeline):
         )
         match = make_match(entry, call.arguments, utterance)
         self._inflight_result = match
+        self._inflight_at = _time.monotonic()
+        self.gate.record(utterance, match)
         return match
 
     def match_high(

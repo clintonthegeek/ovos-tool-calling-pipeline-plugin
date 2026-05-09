@@ -6,7 +6,7 @@ Where the stock OVOS pipeline puts the LLM at the end (as a fallback when keywor
 
 ## Status
 
-**v0.3 — tool dispatch.** When ``enabled``, calls the configured LLM with the live tool catalog and dispatches the picked tool by emitting the same bus message Adapt or Padatious would have emitted. Skills handle the call with zero modifications.
+**v0.4 — latency gate.** Cheap pre-LLM admission control + dispatch caching. Empty / single-token / blocklisted utterances skip the LLM entirely; repeated utterances hit a small LRU and return the previous dispatch immediately. Every decision (skip / cached / proceed) is logged with a reason.
 
 ### Configuration
 
@@ -17,12 +17,24 @@ Add to ``~/.config/mycroft/mycroft.conf`` under ``intents``:
   "ovos-tool-calling-pipeline-plugin": {
     "enabled": true,
     "persona": "OVOS Installer LLM",
-    "model": "accounts/fireworks/models/gpt-oss-120b"
+    "model": "accounts/fireworks/models/gpt-oss-120b",
+
+    "min_words": 2,
+    "cache_size": 32,
+    "blocklist_patterns": []
   }
 }
 ```
 
 The ``persona`` field reuses the API URL, key, and (optional) system prompt from ``~/.config/ovos_persona/<persona>.json``. Override individual fields inline (``api_url``, ``key``, ``model``, ``system_prompt``, ``max_tokens``, ``temperature``) as needed.
+
+Gate config (all optional):
+
+| Field | Default | Effect |
+|---|---|---|
+| ``min_words`` | 2 | Skip LLM if utterance has fewer than N whitespace-separated tokens. |
+| ``cache_size`` | 32 | LRU of recent (utterance → dispatch). 0 disables caching. |
+| ``blocklist_patterns`` | ``[]`` | List of regexes; if any matches, skip LLM. |
 
 Also add the plugin to your pipeline list. Place at ``-high`` for full LLM-orchestrator mode, ``-low`` for fallback after the keyword/fuzzy matchers:
 
@@ -91,10 +103,10 @@ Then restart `ovos-core.service`.
 - [x] **v0.1** — Discover registered skill intents (Adapt + Padatious) by listening to the bus
 - [x] **v0.2** — Convert the registry into OpenAI-style tool schemas
 - [x] **v0.3** — Call configured LLM with the tool list, dispatch the picked tool by emitting the same bus message Adapt/Padatious would emit
-- [ ] **v0.4** — Speak plain text answers when no tool fits (currently returns no match)
-- [ ] **v0.5** — Multi-tool agent loop (sequential calls)
-- [ ] **v0.6** — Conversational state respect (defer to `converse` pipeline)
-- [ ] **v0.7** — Latency gate (skip LLM for trivially keyword-matchable utterances)
+- [x] **v0.4** — Latency gate (skip LLM for empty/short/blocklisted utterances; cache repeated dispatches)
+- [ ] **v0.5** — Speak plain text answers when no tool fits (currently returns no match)
+- [ ] **v0.6** — Multi-tool agent loop (sequential calls)
+- [ ] **v0.7** — Conversational state respect (defer to `converse` pipeline)
 
 ## License
 
