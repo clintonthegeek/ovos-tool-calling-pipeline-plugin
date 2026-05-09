@@ -6,7 +6,39 @@ Where the stock OVOS pipeline puts the LLM at the end (as a fallback when keywor
 
 ## Status
 
-**v0.2 — schema generation.** Builds a live registry of every Adapt and Padatious intent registered on the bus, then converts that registry into OpenAI-style tool schemas. Still returns no match; v0.3 will call the LLM with the catalog and dispatch the picked tool.
+**v0.3 — tool dispatch.** When ``enabled``, calls the configured LLM with the live tool catalog and dispatches the picked tool by emitting the same bus message Adapt or Padatious would have emitted. Skills handle the call with zero modifications.
+
+### Configuration
+
+Add to ``~/.config/mycroft/mycroft.conf`` under ``intents``:
+
+```json
+"intents": {
+  "ovos-tool-calling-pipeline-plugin": {
+    "enabled": true,
+    "persona": "OVOS Installer LLM",
+    "model": "accounts/fireworks/models/gpt-oss-120b"
+  }
+}
+```
+
+The ``persona`` field reuses the API URL, key, and (optional) system prompt from ``~/.config/ovos_persona/<persona>.json``. Override individual fields inline (``api_url``, ``key``, ``model``, ``system_prompt``, ``max_tokens``, ``temperature``) as needed.
+
+Also add the plugin to your pipeline list. Place at ``-high`` for full LLM-orchestrator mode, ``-low`` for fallback after the keyword/fuzzy matchers:
+
+```json
+"pipeline": [
+  "ovos-stop-pipeline-plugin-high",
+  "ovos-converse-pipeline-plugin",
+  "ovos-tool-calling-pipeline-plugin-high",
+  ...
+]
+```
+
+### Tested with
+
+- Fireworks ``accounts/fireworks/models/gpt-oss-120b`` (recommended; clean function calling, no reasoning artefacts).
+- Reasoning models (``deepseek-v4-pro``, ``glm-5p1``) emit their chain of thought in ``reasoning_content`` rather than ``content`` and are not currently supported.
 
 ### Inspection
 
@@ -58,8 +90,8 @@ Then restart `ovos-core.service`.
 
 - [x] **v0.1** — Discover registered skill intents (Adapt + Padatious) by listening to the bus
 - [x] **v0.2** — Convert the registry into OpenAI-style tool schemas
-- [ ] **v0.3** — Call configured LLM with the tool list, dispatch the picked tool by emitting the same bus message Adapt/Padatious would emit
-- [ ] **v0.4** — Pass through plain answers via persona/speak when no tool fits
+- [x] **v0.3** — Call configured LLM with the tool list, dispatch the picked tool by emitting the same bus message Adapt/Padatious would emit
+- [ ] **v0.4** — Speak plain text answers when no tool fits (currently returns no match)
 - [ ] **v0.5** — Multi-tool agent loop (sequential calls)
 - [ ] **v0.6** — Conversational state respect (defer to `converse` pipeline)
 - [ ] **v0.7** — Latency gate (skip LLM for trivially keyword-matchable utterances)

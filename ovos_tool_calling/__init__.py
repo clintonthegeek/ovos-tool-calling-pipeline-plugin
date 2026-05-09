@@ -189,15 +189,24 @@ class SkillRegistry:
 class ToolCallingPipeline(ConfidenceMatcherPipeline):
     """LLM-orchestrator pipeline plugin.
 
-    v0.2: builds OpenAI-style tool schemas from the registry. Still returns
-    no match from match_*; v0.3 will call the LLM with the catalog and
-    dispatch the picked tool.
+    v0.3: when ``enabled`` in config, calls the configured LLM with the tool
+    catalog and dispatches the picked tool by returning the matching
+    IntentHandlerMatch. If the LLM answers in plain text instead of picking
+    a tool, we currently return None and let the rest of the pipeline run.
+    (v0.4 will speak the plain answer.)
 
-    Bus inspection helpers (intended for development):
+    Place us where you want in the pipeline:
+      - At ``*-high`` for full LLM-orchestrator mode (LLM sees every utterance
+        first; remaining matchers only run if no tool fits and we returned
+        None)
+      - At ``*-low`` for fallback mode (only utterances that no other matcher
+        caught reach us)
+
+    Bus inspection helpers:
       - emit ``tool-calling.registry.dump`` to log the registry summary
       - emit ``tool-calling.schemas.dump`` to log a catalog summary
-      - emit ``tool-calling.schemas.dump`` with ``data={"full": True}`` to
-        log the full JSON catalog (large)
+      - emit ``tool-calling.schemas.dump`` with ``data={"full": True}`` for
+        the full JSON catalog
     """
 
     DUMP_REGISTRY_EVENT = "tool-calling.registry.dump"
@@ -212,12 +221,23 @@ class ToolCallingPipeline(ConfidenceMatcherPipeline):
         self.registry = SkillRegistry(self.bus)
         self.bus.on(self.DUMP_REGISTRY_EVENT, self._handle_dump_registry)
         self.bus.on(self.DUMP_SCHEMAS_EVENT, self._handle_dump_schemas)
+
+        from ovos_tool_calling.llm import build_config
+
+        self.enabled = bool(self.config.get("enabled", False))
+        self.llm_config = build_config(self.config) if self.enabled else None
+        # ConfidenceMatcherPipeline.match() falls through high → medium → low,
+        # and some pipeline configurations register us at multiple tiers. Memo
+        # by utterance so we only pay one LLM round-trip per request.
+        self._inflight_utterance: Optional[str] = None
+        self._inflight_result: Optional[IntentHandlerMatch] = None
+
+        status = "ENABLED" if self.enabled and (self.llm_config and self.llm_config.is_usable()) else "disabled"
+        model = self.llm_config.model if self.llm_config else "(none)"
         LOG.info(
-            "ToolCallingPipeline loaded (v0.2: schema generation) — "
-            "registry dump: bus.emit(Message('%s')); "
-            "schema dump: bus.emit(Message('%s'))",
-            self.DUMP_REGISTRY_EVENT,
-            self.DUMP_SCHEMAS_EVENT,
+            "ToolCallingPipeline loaded (v0.3: tool dispatch) — %s, model=%s",
+            status,
+            model,
         )
 
     def build_catalog(self):
@@ -270,17 +290,80 @@ class ToolCallingPipeline(ConfidenceMatcherPipeline):
                 json.dumps(entry.schema, indent=2, ensure_ascii=False),
             )
 
+    def _try_llm_dispatch(
+        self, utterances: List[str], tier: str
+    ) -> Optional[IntentHandlerMatch]:
+        """Build the catalog, ask the LLM, and dispatch its tool pick.
+
+        Returns the IntentHandlerMatch if a tool was picked, or None if the
+        LLM declined / failed / answered in text. The same logic runs at all
+        three confidence tiers; the user controls which tier reaches us via
+        pipeline placement in mycroft.conf.
+        """
+        if not self.enabled or self.llm_config is None or not self.llm_config.is_usable():
+            return None
+        if not utterances:
+            return None
+        utterance = utterances[0]
+
+        # Reuse the previous tier's result if we just computed it.
+        if self._inflight_utterance == utterance:
+            return self._inflight_result
+        self._inflight_utterance = utterance
+        self._inflight_result = None
+
+        from ovos_tool_calling.dispatch import make_match
+        from ovos_tool_calling.llm import call_chat
+
+        tools, name_index = self.build_catalog()
+        if not tools:
+            LOG.debug("[tool-calling] %s: no tools registered yet", tier)
+            return None
+
+        result = call_chat(self.llm_config, utterance, tools)
+        if result is None:
+            return None
+        tool_calls, text = result
+
+        if not tool_calls:
+            if text:
+                LOG.info(
+                    "[tool-calling] %s: LLM answered in text (v0.4 will speak): %s",
+                    tier, text[:120],
+                )
+            else:
+                LOG.debug("[tool-calling] %s: LLM declined (no tool, no text)", tier)
+            return None
+
+        # Pick the first tool call; v0.5 will support multi-step.
+        call = tool_calls[0]
+        entry = name_index.get(call.tool_name)
+        if entry is None:
+            LOG.warning(
+                "[tool-calling] %s: LLM picked unknown tool %r (catalog has %d entries)",
+                tier, call.tool_name, len(name_index),
+            )
+            return None
+
+        LOG.info(
+            "[tool-calling] %s: dispatching %s (matcher=%s) with args=%s",
+            tier, f"{entry.skill_id}:{entry.intent_name}", entry.matcher, call.arguments,
+        )
+        match = make_match(entry, call.arguments, utterance)
+        self._inflight_result = match
+        return match
+
     def match_high(
         self, utterances: List[str], lang: str, message: Message
     ) -> Optional[IntentHandlerMatch]:
-        return None
+        return self._try_llm_dispatch(utterances, tier="high")
 
     def match_medium(
         self, utterances: List[str], lang: str, message: Message
     ) -> Optional[IntentHandlerMatch]:
-        return None
+        return self._try_llm_dispatch(utterances, tier="medium")
 
     def match_low(
         self, utterances: List[str], lang: str, message: Message
     ) -> Optional[IntentHandlerMatch]:
-        return None
+        return self._try_llm_dispatch(utterances, tier="low")
