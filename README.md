@@ -4,6 +4,21 @@ An [OpenVoiceOS](https://github.com/OpenVoiceOS) pipeline plugin that uses an LL
 
 Where the stock OVOS pipeline puts the LLM at the end (as a fallback when keyword/fuzzy matchers miss), this plugin inverts the flow: the LLM sees every utterance first, picks a skill via tool calling (with arguments already extracted), or answers directly when no skill fits.
 
+## Documentation
+
+For contributors and AI assistants working on the plugin:
+
+| Doc | What it covers |
+|---|---|
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | OVOS process topology, message bus, skill model, dispatch flow |
+| [`docs/INTENT_MATCHERS.md`](docs/INTENT_MATCHERS.md) | Adapt and Padatious deep dives, with case-mismatch quirks documented |
+| [`docs/PIPELINE_PROTOCOL.md`](docs/PIPELINE_PROTOCOL.md) | The pipeline plugin contract: discovery, loading, IntentHandlerMatch shape, bus topics |
+| [`docs/INSTALL_NOTES.md`](docs/INSTALL_NOTES.md) | Real-world OVOS install gotchas (vocab case, reasoning models, TTS plugin failures, etc.) |
+| [`docs/DEV_LOOP.md`](docs/DEV_LOOP.md) | Editable install, systemctl restart, log tailing, test-utterance recipes |
+| [`docs/ROADMAP.md`](docs/ROADMAP.md) | Versions shipped (v0.1–v0.4), planned (v0.5+), design rationale |
+| [`docs/TODO.md`](docs/TODO.md) | Active short-term task list |
+| [`CLAUDE.md`](CLAUDE.md) | Instructions for AI assistants working on this repo |
+
 ## Status
 
 **v0.4 — latency gate.** Cheap pre-LLM admission control + dispatch caching. Empty / single-token / blocklisted utterances skip the LLM entirely; repeated utterances hit a small LRU and return the previous dispatch immediately. Every decision (skip / cached / proceed) is logged with a reason.
