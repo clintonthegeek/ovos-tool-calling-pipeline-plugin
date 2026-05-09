@@ -15,7 +15,7 @@ For the long-term arc, see `ROADMAP.md`.
 
 ## Now
 
-- [ ] **v0.5: speak plain text answers when LLM doesn't pick a tool.** Choose `match_type` (custom `tool-calling:speak` recommended) and skill_id. Emit the speak event. Return an IntentHandlerMatch so the rest of the pipeline doesn't run again. Estimated ~50 lines.
+_(no active items — pick from "Soon" below)_
 
 ## Soon (after v0.5)
 
@@ -33,6 +33,7 @@ For the long-term arc, see `ROADMAP.md`.
 
 ## Recently done (keep last ~10)
 
+- [x] **v0.5 speak text answers** committed `ea282fd`. LLM-text path emits `speak` and returns a `tool-calling:speak` sentinel match so `ovos-persona-low` doesn't run a second LLM call. Config flag `speak_text_answers: true`.
 - [x] **v0.4 latency gate** committed `b73e202`. Min-words filter, blocklist, LRU, in-flight memo TTL.
 - [x] **v0.3 tool dispatch** committed `afd62cf`. End-to-end working: voice → STT → pipeline → LLM → dispatch → skill → TTS.
 - [x] **v0.2 tool schema generation** committed `cde5b37`. 81 tools generated for the user's install (36 adapt + 45 padatious).

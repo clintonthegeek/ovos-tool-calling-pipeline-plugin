@@ -22,8 +22,8 @@ This is opposed to the existing `ovos-persona-pipeline-plugin`, which uses an LL
 | 0.2 | ✅ shipped | Tool schema generation (Adapt + Padatious) |
 | 0.3 | ✅ shipped | Tool dispatch via LLM with synthesized IntentHandlerMatch |
 | 0.4 | ✅ shipped | Latency gate + dispatch cache |
-| 0.5 | 🟡 next | Speak plain text answers when no tool fits |
-| 0.6 | 🟡 planned | Multi-tool agent loop (sequential calls) |
+| 0.5 | ✅ shipped | Speak plain text answers when no tool fits |
+| 0.6 | 🟡 next | Multi-tool agent loop (sequential calls) |
 | 0.7 | 🟡 planned | Predictive gate (peek at Adapt/Padatious before LLM call) |
 | 0.8 | 🟡 planned | Conversational state respect (defer to converse pipeline) |
 | 1.0 | 🟡 planned | Stable API; PyPI release |
@@ -77,7 +77,7 @@ Config sources:
 - LLM round-trip blocks the intent service for ~1-2s per call.
 - No tool-call validation — if the LLM picks a tool name we don't know, we log and return None.
 - No multi-tool support — we take only the first tool call.
-- Plain-text answers from the LLM are logged but ignored (v0.5).
+- Plain-text answers from the LLM are logged but ignored. (Resolved in v0.5.)
 
 **Code**: `ovos_tool_calling/llm.py` (HTTP), `ovos_tool_calling/dispatch.py` (match synthesis).
 
@@ -108,22 +108,33 @@ Single-flight memo with 1s TTL absorbs `ConfidenceMatcherPipeline.match()`'s tie
 
 ---
 
-## v0.5 — Speak plain answers (next)
+## v0.5 — Speak plain answers (shipped)
 
-**What**: when the LLM responds with `content` instead of `tool_calls`, dispatch a `speak` event to `ovos-audio` and return an IntentHandlerMatch that flags the utterance as handled.
+**What**: when the LLM responds with `content` instead of `tool_calls`, the pipeline emits a `speak` bus event with the text and returns a sentinel `IntentHandlerMatch(match_type="tool-calling:speak", skill_id="tool-calling.openvoiceos")`. The match flags the utterance as handled so no further pipeline plugins (notably `ovos-persona-pipeline-plugin-low`) run on the same utterance.
 
-**Why**: Today, plain-text answers from the LLM are logged and ignored, so the rest of the pipeline runs (typically reaching `ovos-persona-pipeline-plugin-low`, which then makes a *second* LLM call). v0.5 closes the loop by letting our orchestrator handle the no-tool case directly.
+**Why**: Before v0.5, plain-text answers were logged and ignored, so the persona-low pipeline made a *second* LLM round-trip on the same utterance. Now our orchestrator closes the loop directly.
 
-**Design notes**:
-- Need to choose a sensible `match_type` for the dispatch; `persona:query` is one option (keeps everything compatible with existing fallback handlers), but a custom one (`tool-calling:speak`) is cleaner.
-- Need to decide whether to claim a `skill_id`. The persona pipeline uses `persona.openvoiceos`. For now, mimic that.
-- This bypasses `match_data["utterance"]` re-parsing — the LLM's `content` is the answer text. We `speak()` it and call it done.
+**Implementation**:
+- `dispatch.make_speak_match(utterance, text, lang)` synthesizes the sentinel match (pure function).
+- `__init__._handle_text_answer` performs the side effect — `bus.emit(message.forward("speak", {...}))` so session/destination context propagates to ovos-audio — then returns the sentinel match.
+- `match_high/medium/low` thread `lang` and the originating `message` into `_try_llm_dispatch`.
+- Config flag `speak_text_answers: true` (default) gates the behavior; set False to fall through to downstream pipeline plugins.
 
-**Estimated**: ~50 lines.
+**Design choices**:
+- `match_type` is `tool-calling:speak`, a custom event name. No skill listens for it; ovos-core's dispatch is a harmless no-op since the user-facing speech already happened on the bus emit.
+- `skill_id` is `tool-calling.openvoiceos`, mirroring how `ovos-persona` claims `persona.openvoiceos`.
+- We deliberately do **not** call `gate.record(...)` on the text path. Cached tool dispatches are deterministic; cached text answers risk replaying stale answers as the LRU ages.
+- The `speak` message uses `message.forward("speak", data)` when the originating message is available, so session_id and destination propagate correctly.
+
+**Limits**:
+- The text answer's quality depends entirely on the LLM's `system_prompt` for this pipeline. Long, verbose answers happen if the persona's prompt invites them.
+- Repeated identical questions pay the LLM round-trip every time (no cache).
+
+**Code**: `ovos_tool_calling/dispatch.py` (`make_speak_match`), `ovos_tool_calling/__init__.py` (`_handle_text_answer`).
 
 ---
 
-## v0.6 — Multi-tool agent loop (planned)
+## v0.6 — Multi-tool agent loop (next)
 
 **What**: when the LLM returns multiple `tool_calls`, dispatch them sequentially. After each tool's response, feed back to the LLM via a follow-up message round.
 

@@ -228,6 +228,12 @@ class ToolCallingPipeline(ConfidenceMatcherPipeline):
         self.enabled = bool(self.config.get("enabled", False))
         self.llm_config = build_config(self.config) if self.enabled else None
         self.gate = Gate(self.config)
+        # v0.5: when the LLM answers in text (no tool pick), speak the text
+        # ourselves and claim the utterance as handled, so the rest of the
+        # pipeline (notably ovos-persona-low) doesn't trigger a second LLM
+        # round-trip on the same utterance. Set to False to fall through to
+        # downstream pipeline plugins instead.
+        self.speak_text_answers = bool(self.config.get("speak_text_answers", True))
         # When ConfidenceMatcherPipeline.match() falls through high → medium → low,
         # or when a config registers us at multiple tiers, we'd otherwise call
         # the LLM once per tier. Short-lived memo (1s) dedupes those same-tick
@@ -241,9 +247,9 @@ class ToolCallingPipeline(ConfidenceMatcherPipeline):
         model = self.llm_config.model if self.llm_config else "(none)"
         cache_size, blocklist_size = self.gate.stats()
         LOG.info(
-            "ToolCallingPipeline loaded (v0.4: latency gate) — %s, model=%s, "
-            "gate(min_words=%d, cache_size=%d, blocklist=%d)",
-            status, model,
+            "ToolCallingPipeline loaded (v0.5: speak text answers) — %s, model=%s, "
+            "speak_text=%s, gate(min_words=%d, cache_size=%d, blocklist=%d)",
+            status, model, self.speak_text_answers,
             self.gate.min_words, self.gate.cache_size, blocklist_size,
         )
 
@@ -298,7 +304,11 @@ class ToolCallingPipeline(ConfidenceMatcherPipeline):
             )
 
     def _try_llm_dispatch(
-        self, utterances: List[str], tier: str
+        self,
+        utterances: List[str],
+        tier: str,
+        lang: str = "en-us",
+        message: Optional[Message] = None,
     ) -> Optional[IntentHandlerMatch]:
         """Build the catalog, ask the LLM, and dispatch its tool pick.
 
@@ -353,9 +363,20 @@ class ToolCallingPipeline(ConfidenceMatcherPipeline):
         tool_calls, text = result
 
         if not tool_calls:
+            if text and self.speak_text_answers:
+                speak_match = self._handle_text_answer(
+                    utterance=utterance,
+                    text=text,
+                    lang=lang,
+                    message=message,
+                    tier=tier,
+                )
+                self._inflight_result = speak_match
+                self._inflight_at = _time.monotonic()
+                return speak_match
             if text:
                 LOG.info(
-                    "[tool-calling] %s: LLM answered in text (v0.4 will speak): %s",
+                    "[tool-calling] %s: LLM answered in text but speak_text_answers=False: %s",
                     tier, text[:120],
                 )
             else:
@@ -382,17 +403,60 @@ class ToolCallingPipeline(ConfidenceMatcherPipeline):
         self.gate.record(utterance, match)
         return match
 
+    def _handle_text_answer(
+        self,
+        utterance: str,
+        text: str,
+        lang: str,
+        message: Optional[Message],
+        tier: str,
+    ) -> IntentHandlerMatch:
+        """Speak ``text`` and synthesize a sentinel match to claim the utterance.
+
+        We emit ``speak`` on the bus *here* (side effect) and return a
+        ``tool-calling:speak`` IntentHandlerMatch so ovos-core stops running
+        further pipeline plugins. No skill listens for the match_type — it's
+        just a sentinel to short-circuit the pipeline.
+        """
+        from ovos_tool_calling.dispatch import (
+            SPEAK_SKILL_ID,
+            make_speak_match,
+        )
+
+        LOG.info(
+            "[tool-calling] %s: speaking LLM text answer (%d chars): %s",
+            tier, len(text), text[:120],
+        )
+
+        speak_data = {
+            "utterance": text,
+            "expect_response": False,
+            "meta": {"skill": SPEAK_SKILL_ID, "source": "tool-calling-pipeline"},
+            "lang": lang,
+        }
+        # Forward from the originating utterance message when we have it, so
+        # session/context (session_id, destination, etc.) propagates to ovos-audio.
+        speak_msg = (
+            message.forward("speak", speak_data)
+            if message is not None
+            else Message("speak", speak_data)
+        )
+        speak_msg.context["skill_id"] = SPEAK_SKILL_ID
+        self.bus.emit(speak_msg)
+
+        return make_speak_match(utterance=utterance, text=text, lang=lang)
+
     def match_high(
         self, utterances: List[str], lang: str, message: Message
     ) -> Optional[IntentHandlerMatch]:
-        return self._try_llm_dispatch(utterances, tier="high")
+        return self._try_llm_dispatch(utterances, tier="high", lang=lang, message=message)
 
     def match_medium(
         self, utterances: List[str], lang: str, message: Message
     ) -> Optional[IntentHandlerMatch]:
-        return self._try_llm_dispatch(utterances, tier="medium")
+        return self._try_llm_dispatch(utterances, tier="medium", lang=lang, message=message)
 
     def match_low(
         self, utterances: List[str], lang: str, message: Message
     ) -> Optional[IntentHandlerMatch]:
-        return self._try_llm_dispatch(utterances, tier="low")
+        return self._try_llm_dispatch(utterances, tier="low", lang=lang, message=message)
