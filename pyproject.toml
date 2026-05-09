@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ovos-tool-calling-pipeline-plugin"
+version = "0.0.1"
+description = "OVOS pipeline plugin that uses an LLM to route utterances to skills as tool calls"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Clinton" }]
+keywords = ["OVOS", "OpenVoiceOS", "LLM", "tool calling", "function calling", "agent"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+]
+dependencies = [
+    "ovos-plugin-manager>=2.0.0",
+    "ovos-bus-client>=0.1.0",
+    "ovos-utils>=0.8.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/clintonthegeek/ovos-tool-calling-pipeline-plugin"
+Source = "https://github.com/clintonthegeek/ovos-tool-calling-pipeline-plugin"
+Issues = "https://github.com/clintonthegeek/ovos-tool-calling-pipeline-plugin/issues"
+
+[project.entry-points."opm.pipeline"]
+ovos-tool-calling-pipeline-plugin = "ovos_tool_calling:ToolCallingPipeline"
+
+[tool.setuptools.packages.find]
+include = ["ovos_tool_calling*"]
