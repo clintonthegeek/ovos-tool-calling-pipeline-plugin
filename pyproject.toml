@@ -25,6 +25,15 @@ dependencies = [
     "requests>=2.0.0",
 ]
 
+[project.optional-dependencies]
+test = [
+    "pytest>=7.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
 [project.urls]
 Homepage = "https://github.com/clintonthegeek/ovos-tool-calling-pipeline-plugin"
 Source = "https://github.com/clintonthegeek/ovos-tool-calling-pipeline-plugin"

@@ -20,7 +20,7 @@ _(no active items — pick from "Soon" below or v0.7 in ROADMAP)_
 ## Soon (after v0.5)
 
 - [ ] Decide whether to bump plugin to `*-high` in the user's `mycroft.conf`. Pre-req: collect a few days of `-low` data on what queries the LLM is currently catching, to predict cost/quality if we move to `-high`.
-- [ ] Add tests. None exist. Start with `schemas.py` (pure functions, easiest target).
+- [ ] Expand test coverage. Initial suite ships pure-function tests for schemas, gate, dispatch, and llm helpers (41 tests). Still missing: `agent.py` (needs FakeBus + threading), `llm.call_chat` (needs HTTP mocking), the pipeline class itself.
 - [ ] Strip the unused `time` import re-aliasing from `_try_llm_dispatch` — currently uses `import time as _time` inline, would be cleaner at the top of the file.
 - [ ] Verify the dispatch shape for OCP (Open Common Play) intents. They're a different category and we haven't tested them. Probably needs custom `match_data` shape.
 - [ ] Audit the cache key — `_normalize` lowercases and collapses whitespace, but "set a 5 minute timer" vs "set a five minute timer" still hit different keys. Numeric normalization could improve hit rate.
@@ -33,6 +33,7 @@ _(no active items — pick from "Soon" below or v0.7 in ROADMAP)_
 
 ## Recently done (keep last ~10)
 
+- [x] **Initial test suite** (41 tests, all pass): `schemas.py`, `gate.py`, `dispatch.py`, `llm.py` helpers. pytest configured via pyproject. Test extra installable via `pip install -e .[test]`.
 - [x] **v0.6 multi-tool agent loop** committed `f62bd05`. Background-thread loop dispatches sequential tool_calls via bus emit, captures speak text via `mycroft.skill.handler.complete` + `speak` listeners, feeds results back to LLM, iterates up to 3. Aborts on `mycroft.stop` or new utterance. Suppresses redundant LLM summary if any skill already spoke. Config: `enable_agent_loop: true`, `max_tool_iterations: 3`, `tool_timeout_seconds: 8.0`.
 - [x] **v0.5 speak text answers** committed `f1642cc`. LLM-text path emits `speak` and returns a `tool-calling:speak` sentinel match so `ovos-persona-low` doesn't run a second LLM call. Config flag `speak_text_answers: true`.
 - [x] **v0.4 latency gate** committed `b73e202`. Min-words filter, blocklist, LRU, in-flight memo TTL.
